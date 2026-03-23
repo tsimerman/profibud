@@ -56,7 +56,7 @@ canvas{display:block;cursor:crosshair}
 <div class="main" id="main">
   <canvas id="c2d"></canvas>
   <canvas id="c3d"></canvas>
-  <div class="info" id="info">Scroll: масштаб · Середня кнопка: рухати · Клік: вибрати</div>
+  <div class="info" id="info">Scroll: масштаб · Alt+клік: рухати план · Клік: вибрати · Delete: видалити</div>
   <div class="props" id="props"></div>
 </div>
 
@@ -196,6 +196,7 @@ let dragging = false, dragStart = null, dragOrig = null;
 let panning = false, panStart = null, panCamStart = null;
 let wallDraw = null; // {x1,y1} when drawing new wall
 let mouseWorld = [0,0];
+let hovered = null; // {type, id} — елемент під курсором
 
 function setTool(t){
   tool=t;
@@ -220,10 +221,14 @@ function draw(){
 
     ctx.lineWidth = Math.max(thick, 2);
     const isSel = selected && selected.type==='wall' && selected.id===w.id;
-    if(w.type==='ext'){
-      ctx.strokeStyle = isSel ? '#5b8def' : '#c8cdd8';
+    const isHov = !isSel && hovered && hovered.type==='wall' && hovered.id===w.id;
+    if(isSel){
+      ctx.strokeStyle = '#5b8def';
+    } else if(isHov){
+      ctx.strokeStyle = w.type==='ext' ? '#e8a050' : '#c8a050';
+      ctx.lineWidth = Math.max(thick+2, 4);
     } else {
-      ctx.strokeStyle = isSel ? '#5b8def' : '#8a8fa0';
+      ctx.strokeStyle = w.type==='ext' ? '#c8cdd8' : '#8a8fa0';
     }
     // Draw wall, but skip door/window openings
     drawWallWithOpenings(w, sx1,sy1,sx2,sy2);
@@ -491,6 +496,13 @@ c2d.addEventListener('mousemove', e=>{
     camX = panCamStart[0] - (e.offsetX - panStart[0])/zoom;
     camY = panCamStart[1] - (e.offsetY - panStart[1])/zoom;
     draw(); return;
+  }
+  // Hover detection
+  if(tool==='select' && !dragging){
+    const oldHov = hovered;
+    hovered = hitTest(wx, wy);
+    c2d.style.cursor = hovered ? 'pointer' : 'crosshair';
+    if(JSON.stringify(oldHov)!==JSON.stringify(hovered)) draw();
   }
   if(dragging && selected && selected.type==='wall'){
     const w = walls.find(x=>x.id===selected.id);
