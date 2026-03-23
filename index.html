@@ -65,7 +65,7 @@ canvas{display:block;cursor:crosshair}
 // ========== DATA ==========
 const WALL_T = 100; // wall thickness mm
 const WALL_EXT = 200;
-const CEIL_H = 2700;
+const CEIL_H = 2530;
 const SNAP = 10; // snap to 10mm grid
 
 let walls = [];
@@ -74,55 +74,58 @@ let windows = [];
 let nextId = 1;
 function uid(){return nextId++}
 
-// Init apartment from PDF plan
+// Init apartment — NEW LAYOUT from renovation plan
 function initApartment(){
   walls = [];doors = [];windows = [];nextId=1;
-  const W = WALL_EXT, w = WALL_T;
-  // Exterior walls
-  addWall(0,0, 5590,0, W, 'ext');           // top
-  addWall(0,0, 0,7410, W, 'ext');           // left
-  addWall(0,7410, 3060,7410, W, 'ext');     // bottom-left
-  addWall(3060,7410, 3060,6190, w, 'ext');  // bathroom right going up
-  addWall(3060,6190, 5590,6190, w, 'ext');  // kitchen bottom? Actually let me rethink
+  const w = WALL_T; // 100mm interior walls
 
-  // Let me simplify: rectangular apartment + balcony
-  walls = [];doors = [];windows = [];nextId=1;
+  // ====== EXTERIOR WALLS (load-bearing, keep all) ======
+  const wTop=addWall(0,0, 5590,0, 340, 'ext');        // top 34cm
+  const wRight=addWall(5590,0, 5590,7410, 320, 'ext'); // right 32cm
+  const wBot=addWall(5590,7410, 0,7410, 80, 'ext');    // bottom 8cm
+  const wLeft=addWall(0,7410, 0,0, 100, 'ext');        // left 10cm
 
-  // Main rectangle exterior
-  addWall(0,0, 5590,0, W, 'ext');           // top
-  addWall(5590,0, 5590,7410, W, 'ext');     // right
-  addWall(5590,7410, 0,7410, W, 'ext');     // bottom
-  addWall(0,7410, 0,0, W, 'ext');           // left
+  // ====== BEDROOM (pentagon, top-left) ======
+  // Right wall of bedroom = partition with living room
+  const brW=addWall(3120,0, 3120,4100, w, 'int');      // 3.81m from top down
+  // Bottom wall of bedroom (horizontal)
+  const bbW=addWall(0,4760, 2440,4760, w, 'int');      // 2.44m from left
+  // Diagonal wall (connects bottom wall end to right wall end)
+  const bdW=addWall(2440,4760, 3120,4100, w, 'int');   // ~910mm diagonal
 
-  // Interior walls
-  // Bedroom / Living room divider (vertical)
-  addWall(3070,0, 3070,4970, w, 'int');
-  // Horizontal wall separating top rooms from bottom area
-  addWall(0,4970, 5590,4970, w, 'int');
-  // Bathroom walls
-  addWall(1170,5970, 1170,7410, w, 'int');  // bathroom left
-  addWall(1170,5970, 3070,5970, w, 'int');  // bathroom top
-  addWall(3070,4970, 3070,7410, w, 'int');  // bathroom right / kitchen divider
+  // ====== BATHROOM (pentagon, bottom-center) ======
+  // Left wall going up from bottom
+  const blW=addWall(1170,7410, 1170,6010, w, 'int');   // 1.40m
+  // Diagonal wall (parallel to bedroom diagonal)
+  // Direction same as bedroom: (680,-660), length ~910mm
+  const bathDiagEndX = 1170+680*910/948;  // ≈1823
+  const bathDiagEndY = 6010-660*910/948;  // ≈5377
+  const bdiagW=addWall(1170,6010, Math.round(bathDiagEndX),Math.round(bathDiagEndY), w, 'int');
+  // Top horizontal wall (with door 50cm)
+  const btW=addWall(Math.round(bathDiagEndX),Math.round(bathDiagEndY), 3120,Math.round(bathDiagEndY), w, 'int'); // ~1.16m
+  // Right wall (aligned with bedroom partition)
+  const brtW=addWall(3120,Math.round(bathDiagEndY), 3120,7410, w, 'int'); // ~2.01m
 
-  // Doors
-  addDoor(walls.find(w=>w.x1===3070&&w.y1===0), 0.82, 800, 'left');  // door between bedroom & living
-  addDoor(walls.find(w=>w.x1===0&&w.y1===4970&&w.x2===5590), 0.25, 900, 'right'); // corridor from bedroom
-  addDoor(walls.find(w=>w.x1===0&&w.y1===4970&&w.x2===5590), 0.65, 900, 'left'); // corridor from living
-  addDoor(walls.find(w=>w.x1===1170&&w.y1===5970&&w.x2===3070), 0.4, 700, 'right'); // bathroom door
-  addDoor(walls.find(w=>w.x1===3070&&w.y1===4970&&w.y2===7410), 0.25, 900, 'left'); // kitchen door
+  // ====== BALCONY (right side, upper area) ======
+  addWall(5590,1500, 6490,1500, w, 'ext');   // balcony top
+  addWall(6490,1500, 6490,3640, w, 'ext');   // balcony right (900mm deep)
+  addWall(6490,3640, 5590,3640, w, 'ext');   // balcony bottom
 
-  // Windows
-  addWindow(walls[0], 0.22, 1500); // bedroom window (top wall)
-  addWindow(walls[0], 0.72, 1200); // living room window (top wall)
-  addWindow(walls[1], 0.78, 1200); // kitchen window (right wall)
+  // ====== DOORS ======
+  // Entry door — 90cm on left wall at bottom (corridor)
+  addDoor(wLeft, 0.08, 900, 'right');
+  // Bedroom door — 70cm on bedroom bottom wall
+  addDoor(bbW, 0.35, 700, 'left');
+  // Bathroom door — 50cm on bathroom top wall
+  addDoor(btW, 0.4, 500, 'right');
+  // Balcony door — 214cm on right wall (upper area)
+  addDoor(wRight, 0.35, 2140, 'left');
 
-  // Balcony walls (as extension)
-  addWall(5590,2050, 6490,2050, w, 'ext');  // balcony top
-  addWall(6490,2050, 6490,4770, w, 'ext');  // balcony right
-  addWall(6490,4770, 5590,4770, w, 'ext');  // balcony bottom
-
-  // Balcony door
-  addDoor(walls.find(w=>w.x1===5590&&w.y1===0&&w.y2===7410), 0.42, 900, 'left');
+  // ====== WINDOWS ======
+  // Bedroom window — 212cm centered on top wall
+  addWindow(wTop, 0.27, 2120);
+  // Living room window — 134cm on right wall (lower area)
+  addWindow(wRight, 0.78, 1340);
 
   saveHistory();
 }
@@ -394,14 +397,13 @@ function drawDimensions(){
 }
 
 function drawRoomNames(){
-  // Simple heuristic: label rooms based on known positions
+  // Room labels for new layout
   const rooms = [
-    {name:'Спальня', x:1500, y:2500, sub:'3.02 × 4.92 м'},
-    {name:'Зал', x:4100, y:2500, sub:'2.47 × 4.92 м'},
-    {name:'Коридор', x:1500, y:5500},
+    {name:'Спальня', x:1400, y:2200, sub:'3.02 × 4.42 м'},
+    {name:'Вітальня + Кухня', x:4350, y:3700, sub:'2.47 × 7.31 м'},
+    {name:'Коридор', x:580, y:6100, sub:'1.17 × 2.89 м'},
     {name:'Ванна', x:2100, y:6700},
-    {name:'Кухня', x:4300, y:6200},
-    {name:'Балкон', x:6040, y:3400},
+    {name:'Балкон', x:6040, y:2570},
   ];
   rooms.forEach(r=>{
     const [sx,sy]=toScreen(r.x,r.y);
