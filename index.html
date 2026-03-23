@@ -43,6 +43,7 @@ canvas{display:block;cursor:crosshair}
     <button class="tb" id="tb-door" onclick="setTool('door')">+ Двері</button>
     <button class="tb" id="tb-window" onclick="setTool('window')">+ Вікно</button>
     <button class="tb" onclick="duplicateWall()">∥ Паралельна</button>
+    <button class="tb" id="tb-measure" onclick="setTool('measure')">📏 Лінійка</button>
     <div class="sep"></div>
     <button class="tb rd" onclick="deleteSelected()">Видалити</button>
     <div class="sep"></div>
@@ -203,6 +204,8 @@ let mouseWorld = [0,0];
 let hovered = null; // {type, id} — елемент під курсором
 let dragEndpoint = null; // 'p1'|'p2' — яку точку стіни тягнемо
 let dragMode = null; // 'move'|'p1'|'p2' — режим перетягування
+let measureStart = null; // {x,y} — початок вимірювання
+let measurements = []; // [{x1,y1,x2,y2}] — збережені вимірювання
 
 function setTool(t){
   tool=t;
@@ -210,6 +213,7 @@ function setTool(t){
   const btn = document.getElementById('tb-'+t);
   if(btn)btn.classList.add('on');
   wallDraw = null;
+  measureStart = null;
   if(t!=='select')selected=null;
   updateProps();
   draw();
@@ -276,6 +280,60 @@ function draw(){
     const len=Math.round(Math.sqrt(dx*dx+dy*dy));
     ctx.fillStyle='var(--ac)';ctx.font='bold 12px sans-serif';ctx.textAlign='center';
     ctx.fillText(len+'mm',(sx1+sx2)/2,(sy1+sy2)/2-10);
+  }
+  // Saved measurements
+  measurements.forEach((m,i)=>drawMeasureLine(m.x1,m.y1,m.x2,m.y2,i));
+  // Active measurement being drawn
+  if(measureStart){
+    drawMeasureLine(measureStart.x,measureStart.y,mouseWorld[0],mouseWorld[1],-1);
+  }
+}
+
+function drawMeasureLine(wx1,wy1,wx2,wy2,idx){
+  const [sx1,sy1]=toScreen(wx1,wy1);
+  const [sx2,sy2]=toScreen(wx2,wy2);
+  const dx=wx2-wx1, dy=wy2-wy1;
+  const len=Math.round(Math.sqrt(dx*dx+dy*dy));
+  const angle=Math.atan2(dy,dx);
+
+  // Line
+  ctx.strokeStyle='#ff6b6b';ctx.lineWidth=1.5;
+  ctx.setLineDash([6,3]);
+  ctx.beginPath();ctx.moveTo(sx1,sy1);ctx.lineTo(sx2,sy2);ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Endpoints
+  ctx.fillStyle='#ff6b6b';
+  ctx.beginPath();ctx.arc(sx1,sy1,4,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(sx2,sy2,4,0,Math.PI*2);ctx.fill();
+
+  // Perpendicular ticks at ends
+  const nx=Math.cos(angle+Math.PI/2)*8, ny=Math.sin(angle+Math.PI/2)*8;
+  ctx.strokeStyle='#ff6b6b';ctx.lineWidth=1.5;ctx.setLineDash([]);
+  ctx.beginPath();ctx.moveTo(sx1-nx,sy1-ny);ctx.lineTo(sx1+nx,sy1+ny);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(sx2-nx,sy2-ny);ctx.lineTo(sx2+nx,sy2+ny);ctx.stroke();
+
+  // Label background + text
+  const mx=(sx1+sx2)/2, my=(sy1+sy2)/2;
+  const lenText = len >= 1000 ? (len/1000).toFixed(2)+' м' : len+' мм';
+  ctx.font='bold 12px sans-serif';
+  const tw=ctx.measureText(lenText).width;
+  // Offset label above line
+  const offX=Math.cos(angle+Math.PI/2)*16, offY=Math.sin(angle+Math.PI/2)*16;
+  const lx=mx+offX, ly=my+offY;
+  ctx.fillStyle='rgba(15,17,23,0.85)';
+  ctx.fillRect(lx-tw/2-5, ly-8, tw+10, 16);
+  ctx.strokeStyle='#ff6b6b';ctx.lineWidth=1;
+  ctx.strokeRect(lx-tw/2-5, ly-8, tw+10, 16);
+  ctx.fillStyle='#ff6b6b';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(lenText, lx, ly);
+
+  // Delete button for saved measurements
+  if(idx>=0){
+    ctx.fillStyle='rgba(239,91,91,0.3)';
+    ctx.beginPath();ctx.arc(sx2+12,sy2-12,8,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#ff6b6b';ctx.font='bold 10px sans-serif';
+    ctx.fillText('✕',sx2+12,sy2-12);
   }
 }
 
@@ -517,11 +575,38 @@ c2d.addEventListener('mousedown', e=>{
       setTool('select');
     }
   }
+  else if(tool === 'measure'){
+    const snap = snapToWallPoint(wx,wy);
+    const px=snap?snap.x:snapV(wx), py=snap?snap.y:snapV(wy);
+    // Check if clicking on delete button of saved measurement
+    for(let i=measurements.length-1;i>=0;i--){
+      const m=measurements[i];
+      const [sx2,sy2]=toScreen(m.x2,m.y2);
+      if(Math.abs(e.offsetX-(sx2+12))<12 && Math.abs(e.offsetY-(sy2-12))<12){
+        measurements.splice(i,1);draw();return;
+      }
+    }
+    if(!measureStart){
+      measureStart={x:px,y:py};
+    } else {
+      measurements.push({x1:measureStart.x,y1:measureStart.y,x2:px,y2:py});
+      measureStart=null;
+      draw();
+    }
+  }
 });
 
 c2d.addEventListener('mousemove', e=>{
   const [wx,wy] = toWorld(e.offsetX, e.offsetY);
-  mouseWorld = [snapV(wx), snapV(wy)];
+  // Snap to wall for measure tool
+  if(tool==='measure'){
+    const snap=snapToWallPoint(wx,wy);
+    mouseWorld = snap ? [snap.x, snap.y] : [snapV(wx), snapV(wy)];
+    c2d.style.cursor = snap ? 'crosshair' : 'default';
+    if(measureStart) draw();
+  } else {
+    mouseWorld = [snapV(wx), snapV(wy)];
+  }
   document.getElementById('coords').textContent = `${Math.round(wx)} × ${Math.round(wy)} mm`;
 
   if(panning){
@@ -591,7 +676,7 @@ c2d.addEventListener('mouseup', e=>{
 });
 
 document.addEventListener('keydown', e=>{
-  if(e.key==='Escape'){wallDraw=null;selected=null;setTool('select');draw()}
+  if(e.key==='Escape'){wallDraw=null;measureStart=null;selected=null;setTool('select');draw()}
   if(e.key==='Delete'||e.key==='Backspace'){if(selected){deleteSelected()}}
   if(e.ctrlKey&&e.key==='z'){e.preventDefault();undo()}
   if(e.ctrlKey&&e.key==='y'){e.preventDefault();redo()}
@@ -631,6 +716,28 @@ function nearestWall(wx,wy,maxDist){
       const t=projectOnSeg(wx,wy,w.x1,w.y1,w.x2,w.y2);
       best={wall:w,dist:d,t:Math.max(0.1,Math.min(0.9,t))};
     }
+  }
+  return best;
+}
+
+function snapToWallPoint(wx,wy){
+  const thresh=30/zoom;
+  let best=null,bestD=thresh;
+  // Snap to wall endpoints
+  for(const w of walls){
+    let d=dist(wx,wy,w.x1,w.y1);
+    if(d<bestD){bestD=d;best={x:w.x1,y:w.y1}}
+    d=dist(wx,wy,w.x2,w.y2);
+    if(d<bestD){bestD=d;best={x:w.x2,y:w.y2}}
+  }
+  if(best) return best;
+  // Snap to nearest point on wall
+  bestD=thresh;
+  for(const w of walls){
+    const t=projectOnSeg(wx,wy,w.x1,w.y1,w.x2,w.y2);
+    const px=w.x1+(w.x2-w.x1)*t, py=w.y1+(w.y2-w.y1)*t;
+    const d=dist(wx,wy,px,py);
+    if(d<bestD){bestD=d;best={x:Math.round(px),y:Math.round(py)}}
   }
   return best;
 }
