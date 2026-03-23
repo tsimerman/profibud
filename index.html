@@ -44,6 +44,7 @@ canvas{display:block;cursor:crosshair}
     <button class="tb" id="tb-window" onclick="setTool('window')">+ Вікно</button>
     <button class="tb" onclick="duplicateWall()">∥ Паралельна</button>
     <button class="tb" id="tb-measure" onclick="setTool('measure')">📏 Лінійка</button>
+    <button class="tb" id="tb-dims" onclick="cycleDims()">Розміри: вибране</button>
     <div class="sep"></div>
     <button class="tb rd" onclick="deleteSelected()">Видалити</button>
     <div class="sep"></div>
@@ -207,6 +208,7 @@ let dragEndpoint = null; // 'p1'|'p2' — яку точку стіни тягн�
 let dragMode = null; // 'move'|'p1'|'p2' — режим перетягування
 let measureStart = null; // {x,y} — початок вимірювання
 let measurements = []; // [{x1,y1,x2,y2}] — збережені вимірювання
+let showDims = 'selected'; // 'all'|'selected'|'none' — режим показу розмірів
 
 function setTool(t){
   tool=t;
@@ -281,6 +283,18 @@ function draw(){
     const len=Math.round(Math.sqrt(dx*dx+dy*dy));
     ctx.fillStyle='var(--ac)';ctx.font='bold 12px sans-serif';ctx.textAlign='center';
     ctx.fillText(len+'mm',(sx1+sx2)/2,(sy1+sy2)/2-10);
+  }
+  // Snap indicator for wall/measure tool
+  if((tool==='wall'||tool==='measure') && !panning){
+    const [smx,smy]=toScreen(mouseWorld[0],mouseWorld[1]);
+    const snap=snapToWallPoint(...toWorld(smx/1,smy/1));
+    // Always show cursor dot
+    ctx.fillStyle=snap?'#3dd68c':'rgba(91,141,239,0.5)';
+    ctx.beginPath();ctx.arc(smx,smy,snap?6:4,0,Math.PI*2);ctx.fill();
+    if(snap){
+      ctx.strokeStyle='#3dd68c';ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.arc(smx,smy,10,0,Math.PI*2);ctx.stroke();
+    }
   }
   // Saved measurements
   measurements.forEach((m,i)=>drawMeasureLine(m.x1,m.y1,m.x2,m.y2,i));
@@ -396,13 +410,14 @@ function drawDoor(d, wall){
   // Door line
   ctx.strokeStyle=isSel?'#5b8def':'#f0a050';ctx.lineWidth=2;
   ctx.beginPath();ctx.moveTo(s1x,s1y);ctx.lineTo(s2x,s2y);ctx.stroke();
-  // Swing arc
+  // Swing arc — side: 'in' (default) or 'out' determines which side of wall
   const r=d.width*zoom;
   const wallAngle=Math.atan2(wdy,wdx);
   const hingeIdx = d.swing==='left'?0:1;
   const [hx,hy] = hingeIdx===0?[s1x,s1y]:[s2x,s2y];
   const startAngle = wallAngle + (hingeIdx===0?0:Math.PI);
-  const dir = d.swing==='left'?-1:1;
+  const sideFlip = (d.side==='out') ? -1 : 1;
+  const dir = (d.swing==='left'?-1:1) * sideFlip;
   ctx.strokeStyle=isSel?'rgba(91,141,239,0.4)':'rgba(240,160,80,0.3)';
   ctx.lineWidth=1;ctx.beginPath();
   ctx.arc(hx,hy,r,startAngle+Math.PI/2*dir,startAngle,dir>0);
@@ -432,25 +447,40 @@ function drawWindow(w, wall){
 }
 
 function drawDimensions(){
-  if(zoom < 0.04) return; // too zoomed out
+  if(zoom < 0.04) return;
   walls.forEach(w=>{
+    // Check visibility mode
+    const isSel = selected && selected.type==='wall' && selected.id===w.id;
+    const isHov = hovered && hovered.type==='wall' && hovered.id===w.id;
+    if(showDims==='none') return;
+    if(showDims==='selected' && !isSel && !isHov) return;
+
     const dx=w.x2-w.x1, dy=w.y2-w.y1;
     const len=Math.round(Math.sqrt(dx*dx+dy*dy));
-    if(len < 300) return;
+    if(len < 100) return;
     const mx=(w.x1+w.x2)/2, my=(w.y1+w.y2)/2;
     const [sx,sy]=toScreen(mx,my);
     const angle=Math.atan2(dy,dx);
-    // Normal direction for offset
     const nx=-Math.sin(angle)*18, ny=Math.cos(angle)*18;
+    const lenText = len >= 1000 ? (len/1000).toFixed(2)+'м' : len+'';
+
+    // Background for readability
     ctx.save();
     ctx.translate(sx+nx, sy+ny);
     let textAngle = angle;
     if(textAngle > Math.PI/2) textAngle -= Math.PI;
     if(textAngle < -Math.PI/2) textAngle += Math.PI;
     ctx.rotate(textAngle);
-    ctx.fillStyle='rgba(122,129,148,0.7)';
-    ctx.font='10px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
-    ctx.fillText(len, 0, 0);
+    const fontSize = (isSel||isHov) ? 12 : 10;
+    ctx.font=(isSel?'bold ':'')+fontSize+'px sans-serif';
+    const tw=ctx.measureText(lenText).width;
+    if(showDims==='all'){
+      ctx.fillStyle='rgba(15,17,23,0.6)';
+      ctx.fillRect(-tw/2-3,-8,tw+6,16);
+    }
+    ctx.fillStyle=(isSel||isHov)?'#5b8def':'rgba(122,129,148,0.8)';
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(lenText, 0, 0);
     ctx.restore();
   });
 }
@@ -541,16 +571,18 @@ c2d.addEventListener('mousedown', e=>{
     draw();
   }
   else if(tool === 'wall'){
+    // Magnetic snap to existing wall points
+    const snap = snapToWallPoint(wx,wy);
+    const px=snap?snap.x:snapV(wx), py=snap?snap.y:snapV(wy);
     if(!wallDraw){
-      wallDraw = {x1:snapV(wx),y1:snapV(wy)};
+      wallDraw = {x1:px,y1:py};
     } else {
-      const x2=snapV(wx),y2=snapV(wy);
-      if(Math.abs(x2-wallDraw.x1)+Math.abs(y2-wallDraw.y1)>50){
+      if(Math.abs(px-wallDraw.x1)+Math.abs(py-wallDraw.y1)>50){
         // Snap to axis if close
-        let fx2=x2,fy2=y2;
-        if(Math.abs(x2-wallDraw.x1)<100) fx2=wallDraw.x1;
-        if(Math.abs(y2-wallDraw.y1)<100) fy2=wallDraw.y1;
-        addWall(wallDraw.x1,wallDraw.y1,fx2,fy2,WALL_T,'int');
+        let fx=px,fy=py;
+        if(Math.abs(px-wallDraw.x1)<100) fx=wallDraw.x1;
+        if(Math.abs(py-wallDraw.y1)<100) fy=wallDraw.y1;
+        addWall(wallDraw.x1,wallDraw.y1,fx,fy,WALL_T,'int');
         saveHistory();
       }
       wallDraw=null;
@@ -599,12 +631,17 @@ c2d.addEventListener('mousedown', e=>{
 
 c2d.addEventListener('mousemove', e=>{
   const [wx,wy] = toWorld(e.offsetX, e.offsetY);
-  // Snap to wall for measure tool
-  if(tool==='measure'){
+  // Snap to wall for measure/wall tools
+  if(tool==='measure' || tool==='wall'){
     const snap=snapToWallPoint(wx,wy);
     mouseWorld = snap ? [snap.x, snap.y] : [snapV(wx), snapV(wy)];
+    // Axis snap for wall tool
+    if(tool==='wall' && wallDraw && !snap){
+      if(Math.abs(mouseWorld[0]-wallDraw.x1)<100) mouseWorld[0]=wallDraw.x1;
+      if(Math.abs(mouseWorld[1]-wallDraw.y1)<100) mouseWorld[1]=wallDraw.y1;
+    }
     c2d.style.cursor = snap ? 'crosshair' : 'default';
-    if(measureStart) draw();
+    if(measureStart || wallDraw) draw();
   } else {
     mouseWorld = [snapV(wx), snapV(wy)];
   }
@@ -732,15 +769,35 @@ function snapToWallPoint(wx,wy){
     if(d<bestD){bestD=d;best={x:w.x2,y:w.y2}}
   }
   if(best) return best;
-  // Snap to nearest point on wall
+  // Snap to nearest point on wall EDGE (offset by half thickness)
   bestD=thresh;
   for(const w of walls){
+    const dx=w.x2-w.x1, dy=w.y2-w.y1;
+    const wlen=Math.sqrt(dx*dx+dy*dy);
+    if(wlen===0) continue;
     const t=projectOnSeg(wx,wy,w.x1,w.y1,w.x2,w.y2);
-    const px=w.x1+(w.x2-w.x1)*t, py=w.y1+(w.y2-w.y1)*t;
-    const d=dist(wx,wy,px,py);
-    if(d<bestD){bestD=d;best={x:Math.round(px),y:Math.round(py)}}
+    const cx=w.x1+dx*t, cy=w.y1+dy*t;
+    // Normal vector (perpendicular to wall)
+    const nx=-dy/wlen, ny=dx/wlen;
+    const halfT=w.thickness/2;
+    // Two edges of the wall
+    const e1x=cx+nx*halfT, e1y=cy+ny*halfT;
+    const e2x=cx-nx*halfT, e2y=cy-ny*halfT;
+    const d1=dist(wx,wy,e1x,e1y);
+    const d2=dist(wx,wy,e2x,e2y);
+    if(d1<bestD){bestD=d1;best={x:Math.round(e1x),y:Math.round(e1y)}}
+    if(d2<bestD){bestD=d2;best={x:Math.round(e2x),y:Math.round(e2y)}}
   }
   return best;
+}
+
+function cycleDims(){
+  const modes=['selected','all','none'];
+  const labels=['Розміри: вибране','Розміри: всі','Розміри: вимк'];
+  const idx=modes.indexOf(showDims);
+  showDims=modes[(idx+1)%3];
+  document.getElementById('tb-dims').textContent=labels[(idx+1)%3];
+  draw();
 }
 
 function dist(x1,y1,x2,y2){return Math.sqrt((x2-x1)**2+(y2-y1)**2)}
@@ -831,12 +888,17 @@ function updateProps(){
   } else if(selected.type==='door'){
     const d=doors.find(x=>x.id===selected.id);
     if(!d){panel.classList.remove('open');return}
+    const side=d.side||'in';
     html=`<h3>Двері</h3>
       <label>Ширина (мм)</label><input type="number" value="${d.width}" onchange="editDoor(${d.id},'width',+this.value)">
       <label>Позиція (0-1)</label><input type="number" step="0.01" min="0.05" max="0.95" value="${d.pos.toFixed(2)}" onchange="editDoor(${d.id},'pos',+this.value)">
-      <label>Відкривання</label><select onchange="editDoor(${d.id},'swing',this.value)">
-        <option value="left" ${d.swing==='left'?'selected':''}>Ліве</option>
-        <option value="right" ${d.swing==='right'?'selected':''}>Праве</option>
+      <label>Петлі</label><select onchange="editDoor(${d.id},'swing',this.value)">
+        <option value="left" ${d.swing==='left'?'selected':''}>Ліві</option>
+        <option value="right" ${d.swing==='right'?'selected':''}>Праві</option>
+      </select>
+      <label>Напрямок</label><select onchange="editDoor(${d.id},'side',this.value)">
+        <option value="in" ${side==='in'?'selected':''}>Всередину</option>
+        <option value="out" ${side==='out'?'selected':''}>Назовні</option>
       </select>`;
   } else if(selected.type==='window'){
     const w=windows.find(x=>x.id===selected.id);
