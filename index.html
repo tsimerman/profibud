@@ -42,6 +42,7 @@ canvas{display:block;cursor:crosshair}
     <button class="tb" id="tb-wall" onclick="setTool('wall')">+ Стіна</button>
     <button class="tb" id="tb-door" onclick="setTool('door')">+ Двері</button>
     <button class="tb" id="tb-window" onclick="setTool('window')">+ Вікно</button>
+    <button class="tb" onclick="duplicateWall()">∥ Паралельна</button>
     <div class="sep"></div>
     <button class="tb rd" onclick="deleteSelected()">Видалити</button>
     <div class="sep"></div>
@@ -197,6 +198,8 @@ let panning = false, panStart = null, panCamStart = null;
 let wallDraw = null; // {x1,y1} when drawing new wall
 let mouseWorld = [0,0];
 let hovered = null; // {type, id} — елемент під курсором
+let dragEndpoint = null; // 'p1'|'p2' — яку точку стіни тягнемо
+let dragMode = null; // 'move'|'p1'|'p2' — режим перетягування
 
 function setTool(t){
   tool=t;
@@ -232,6 +235,16 @@ function draw(){
     }
     // Draw wall, but skip door/window openings
     drawWallWithOpenings(w, sx1,sy1,sx2,sy2);
+    // Draw endpoint handles for selected wall
+    if(isSel){
+      const hr=7;
+      ctx.fillStyle='#5b8def';
+      ctx.beginPath();ctx.arc(sx1,sy1,hr,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(sx2,sy2,hr,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#fff';
+      ctx.beginPath();ctx.arc(sx1,sy1,3,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(sx2,sy2,3,0,Math.PI*2);ctx.fill();
+    }
   });
   // Draw doors
   doors.forEach(d=>{
@@ -432,13 +445,30 @@ c2d.addEventListener('mousedown', e=>{
   if(e.button !== 0) return;
 
   if(tool === 'select'){
+    // Check if clicking on endpoint of already selected wall
+    if(selected && selected.type==='wall'){
+      const w = walls.find(x=>x.id===selected.id);
+      if(w){
+        const epThresh = 20/zoom;
+        if(dist(wx,wy,w.x1,w.y1)<epThresh){
+          dragging=true; dragMode='p1'; dragStart=[wx,wy];
+          dragOrig={x1:w.x1,y1:w.y1,x2:w.x2,y2:w.y2};
+          return;
+        }
+        if(dist(wx,wy,w.x2,w.y2)<epThresh){
+          dragging=true; dragMode='p2'; dragStart=[wx,wy];
+          dragOrig={x1:w.x1,y1:w.y1,x2:w.x2,y2:w.y2};
+          return;
+        }
+      }
+    }
     const hit = hitTest(wx, wy);
     if(hit){
       selected = hit;
       if(hit.type==='wall'){
         const w = walls.find(x=>x.id===hit.id);
-        if(w && w.type==='int'){
-          dragging = true;
+        if(w){
+          dragging = true; dragMode='move';
           dragStart = [wx,wy];
           dragOrig = {x1:w.x1,y1:w.y1,x2:w.x2,y2:w.y2};
         }
@@ -497,29 +527,54 @@ c2d.addEventListener('mousemove', e=>{
     camY = panCamStart[1] - (e.offsetY - panStart[1])/zoom;
     draw(); return;
   }
-  // Hover detection
+  // Hover detection + endpoint cursor
   if(tool==='select' && !dragging){
     const oldHov = hovered;
     hovered = hitTest(wx, wy);
-    c2d.style.cursor = hovered ? 'pointer' : 'crosshair';
+    // Check if near endpoint of selected wall
+    let nearEp = false;
+    if(selected && selected.type==='wall'){
+      const w = walls.find(x=>x.id===selected.id);
+      if(w){
+        const epT = 20/zoom;
+        if(dist(wx,wy,w.x1,w.y1)<epT || dist(wx,wy,w.x2,w.y2)<epT) nearEp=true;
+      }
+    }
+    c2d.style.cursor = nearEp ? 'grab' : hovered ? 'pointer' : 'crosshair';
     if(JSON.stringify(oldHov)!==JSON.stringify(hovered)) draw();
   }
   if(dragging && selected && selected.type==='wall'){
     const w = walls.find(x=>x.id===selected.id);
     if(w){
-      const dx = snapV(wx - dragStart[0]);
-      const dy = snapV(wy - dragStart[1]);
-      const isH = Math.abs(dragOrig.y1-dragOrig.y2)<10; // horizontal
-      const isV = Math.abs(dragOrig.x1-dragOrig.x2)<10; // vertical
-      if(isV){
-        w.x1=dragOrig.x1+dx; w.x2=dragOrig.x2+dx;
-        w.y1=dragOrig.y1; w.y2=dragOrig.y2;
-      } else if(isH){
-        w.y1=dragOrig.y1+dy; w.y2=dragOrig.y2+dy;
-        w.x1=dragOrig.x1; w.x2=dragOrig.x2;
+      const sx=snapV(wx), sy=snapV(wy);
+      if(dragMode==='p1'){
+        // Розтягуємо початкову точку, зі snap до осі
+        let nx=sx, ny=sy;
+        if(Math.abs(nx-w.x2)<50) nx=w.x2; // snap vertical
+        if(Math.abs(ny-w.y2)<50) ny=w.y2; // snap horizontal
+        w.x1=nx; w.y1=ny;
+      } else if(dragMode==='p2'){
+        // Розтягуємо кінцеву точку
+        let nx=sx, ny=sy;
+        if(Math.abs(nx-w.x1)<50) nx=w.x1;
+        if(Math.abs(ny-w.y1)<50) ny=w.y1;
+        w.x2=nx; w.y2=ny;
       } else {
-        w.x1=dragOrig.x1+dx; w.y1=dragOrig.y1+dy;
-        w.x2=dragOrig.x2+dx; w.y2=dragOrig.y2+dy;
+        // Переміщення всієї стіни
+        const dx = snapV(wx - dragStart[0]);
+        const dy = snapV(wy - dragStart[1]);
+        const isH = Math.abs(dragOrig.y1-dragOrig.y2)<10;
+        const isV = Math.abs(dragOrig.x1-dragOrig.x2)<10;
+        if(isV){
+          w.x1=dragOrig.x1+dx; w.x2=dragOrig.x2+dx;
+          w.y1=dragOrig.y1; w.y2=dragOrig.y2;
+        } else if(isH){
+          w.y1=dragOrig.y1+dy; w.y2=dragOrig.y2+dy;
+          w.x1=dragOrig.x1; w.x2=dragOrig.x2;
+        } else {
+          w.x1=dragOrig.x1+dx; w.y1=dragOrig.y1+dy;
+          w.x2=dragOrig.x2+dx; w.y2=dragOrig.y2+dy;
+        }
       }
       draw();
     }
@@ -607,6 +662,36 @@ function deleteSelected(){
   saveHistory();updateProps();draw();
 }
 
+// ========== DUPLICATE / PARALLEL ==========
+function duplicateWall(){
+  if(!selected || selected.type!=='wall') return;
+  const w=walls.find(x=>x.id===selected.id);
+  if(!w) return;
+  const offset = 300; // 300mm offset
+  const dx=w.x2-w.x1, dy=w.y2-w.y1;
+  const len=Math.sqrt(dx*dx+dy*dy);
+  if(len===0) return;
+  // Normal vector (perpendicular)
+  const nx=-dy/len*offset, ny=dx/len*offset;
+  const nw=addWall(w.x1+nx,w.y1+ny,w.x2+nx,w.y2+ny,w.thickness,w.type);
+  selected={type:'wall',id:nw.id};
+  saveHistory();updateProps();draw();
+}
+
+// ========== SET WALL LENGTH ==========
+function setWallLength(id, newLen){
+  const w=walls.find(x=>x.id===id);
+  if(!w) return;
+  const dx=w.x2-w.x1, dy=w.y2-w.y1;
+  const curLen=Math.sqrt(dx*dx+dy*dy);
+  if(curLen===0) return;
+  const scale=newLen/curLen;
+  // Keep p1 fixed, move p2
+  w.x2=Math.round(w.x1+dx*scale);
+  w.y2=Math.round(w.y1+dy*scale);
+  saveHistory();updateProps();draw();
+}
+
 // ========== PROPERTIES PANEL ==========
 function updateProps(){
   const panel = document.getElementById('props');
@@ -618,7 +703,7 @@ function updateProps(){
     if(!w){panel.classList.remove('open');return}
     const len=Math.round(dist(w.x1,w.y1,w.x2,w.y2));
     html=`<h3>Стіна</h3>
-      <label>Довжина</label><div style="font-size:18px;font-weight:700;color:var(--ac)">${len} мм</div>
+      <label>Довжина (мм)</label><input type="number" value="${len}" style="font-size:16px;font-weight:700;color:var(--ac)" onchange="setWallLength(${w.id},+this.value)">
       <label>Товщина (мм)</label><input type="number" value="${w.thickness}" onchange="editWall(${w.id},'thickness',+this.value)">
       <label>Тип</label><select onchange="editWall(${w.id},'type',this.value)">
         <option value="ext" ${w.type==='ext'?'selected':''}>Зовнішня</option>
@@ -631,7 +716,8 @@ function updateProps(){
       <div class="row">
         <div><label>X2</label><input type="number" value="${w.x2}" onchange="editWall(${w.id},'x2',+this.value)"></div>
         <div><label>Y2</label><input type="number" value="${w.y2}" onchange="editWall(${w.id},'y2',+this.value)"></div>
-      </div>`;
+      </div>
+      <button class="tb" onclick="duplicateWall()" style="width:100%;margin-top:12px">∥ Паралельна копія</button>`;
   } else if(selected.type==='door'){
     const d=doors.find(x=>x.id===selected.id);
     if(!d){panel.classList.remove('open');return}
