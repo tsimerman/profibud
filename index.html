@@ -51,6 +51,7 @@ canvas{display:block;cursor:crosshair}
     <button class="tb" onclick="redo()">Redo</button>
     <div class="sep"></div>
     <button class="tb gn" id="tb-3d" onclick="toggle3D()">3D</button>
+    <button class="tb" onclick="resetToDefault()" style="font-size:10px">Скинути</button>
   </div>
   <div style="flex:1"></div>
   <span style="font-size:11px;color:var(--tx2)" id="coords"></span>
@@ -583,7 +584,7 @@ c2d.addEventListener('mousedown', e=>{
       const m=measurements[i];
       const [sx2,sy2]=toScreen(m.x2,m.y2);
       if(Math.abs(e.offsetX-(sx2+12))<12 && Math.abs(e.offsetY-(sy2-12))<12){
-        measurements.splice(i,1);draw();return;
+        measurements.splice(i,1);autoSave();draw();return;
       }
     }
     if(!measureStart){
@@ -671,7 +672,7 @@ c2d.addEventListener('mousemove', e=>{
 });
 
 c2d.addEventListener('mouseup', e=>{
-  if(panning){panning=false;c2d.style.cursor='crosshair';return}
+  if(panning){panning=false;c2d.style.cursor='crosshair';autoSave();return}
   if(dragging){dragging=false;saveHistory();updateProps();return}
 });
 
@@ -1077,9 +1078,45 @@ function getApartmentFloorShape(s){
   return unique;
 }
 
+// ========== AUTO-SAVE / LOAD ==========
+const SAVE_KEY = 'profibud_plan';
+function autoSave(){
+  try{
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      walls, doors, windows, measurements, nextId,
+      cam:{x:camX,y:camY,z:zoom}
+    }));
+  }catch(e){}
+}
+function autoLoad(){
+  try{
+    const raw = localStorage.getItem(SAVE_KEY);
+    if(!raw) return false;
+    const s = JSON.parse(raw);
+    walls=s.walls||[]; doors=s.doors||[]; windows=s.windows||[];
+    measurements=s.measurements||[]; nextId=s.nextId||1;
+    if(s.cam){camX=s.cam.x; camY=s.cam.y; zoom=s.cam.z;}
+    saveHistory();
+    return true;
+  }catch(e){return false}
+}
+function resetToDefault(){
+  if(!confirm('Скинути план до початкового? Всі зміни будуть втрачені.')) return;
+  localStorage.removeItem(SAVE_KEY);
+  initApartment();
+  camX=3300; camY=3700; zoom=0.12;
+  measurements=[];
+  draw();
+}
+// Override saveHistory to also auto-save
+const _origSaveHistory = saveHistory;
+saveHistory = function(){_origSaveHistory(); autoSave();};
+
 // ========== INIT ==========
-initApartment();
-camX = 3300; camY = 3700;
+if(!autoLoad()){
+  initApartment();
+  camX = 3300; camY = 3700;
+}
 resize();
 setTimeout(draw, 100);
 </script>
