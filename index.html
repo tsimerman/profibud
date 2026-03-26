@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ProfiBud — Редактор планування</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#0f1117;--sf:#1a1d27;--sf2:#242836;--bd:#333847;--tx:#e4e6ed;--tx2:#7a8194;--ac:#5b8def;--gn:#3dd68c;--rd:#ef5b5b;--or:#f0a050}
@@ -31,6 +32,7 @@ canvas{display:block;cursor:crosshair}
 .props input:focus{border-color:var(--ac)}
 .props .row{display:flex;gap:6px}.props .row>*{flex:1}
 .room-label{position:absolute;pointer-events:none;z-index:2}
+.ruler3d-label{position:absolute;background:var(--ac);color:#fff;padding:4px 10px;border-radius:6px;font-size:13px;font-weight:700;pointer-events:none;z-index:10;transform:translateX(-50%);white-space:nowrap}
 </style>
 </head>
 <body>
@@ -52,6 +54,7 @@ canvas{display:block;cursor:crosshair}
     <button class="tb" onclick="redo()">Redo</button>
     <div class="sep"></div>
     <button class="tb gn" id="tb-3d" onclick="toggle3D()">3D</button>
+    <button class="tb" onclick="exportPDF()">PDF</button>
     <button class="tb" onclick="resetToDefault()" style="font-size:10px">Скинути</button>
   </div>
   <div style="flex:1"></div>
@@ -60,7 +63,7 @@ canvas{display:block;cursor:crosshair}
 <div class="main" id="main">
   <canvas id="c2d"></canvas>
   <canvas id="c3d"></canvas>
-  <div class="info" id="info">Scroll: масштаб · Alt+клік: рухати план · Клік: вибрати · Delete: видалити</div>
+  <div class="info" id="info">Scroll: масштаб · Alt+клік: рухати план · Клік: вибрати · Delete: видалити · Лінійка: вільне вимірювання, Shift = магніт до стін</div>
   <div class="props" id="props"></div>
 </div>
 
@@ -609,7 +612,8 @@ c2d.addEventListener('mousedown', e=>{
     }
   }
   else if(tool === 'measure'){
-    const snap = snapToWallPoint(wx,wy);
+    // Shift = snap to wall, без Shift = вільне вимірювання
+    const snap = e.shiftKey ? snapToWallPoint(wx,wy) : null;
     const px=snap?snap.x:snapV(wx), py=snap?snap.y:snapV(wy);
     // Check if clicking on delete button of saved measurement
     for(let i=measurements.length-1;i>=0;i--){
@@ -1097,7 +1101,9 @@ function init3D(){
     updateCamera3d();
   },{passive:false});
   c3.addEventListener('contextmenu', e=>e.preventDefault());
+  c3.addEventListener('click', onCanvas3dClick);
 
+  clearRuler3d();
   animate3d();
 }
 
@@ -1111,9 +1117,99 @@ function updateCamera3d(){
   camera3d.lookAt(orbitTarget.x, 1.5, orbitTarget.z);
 }
 
+// ========== 3D RULER ==========
+let ruler3dPoints = []; // [{x,y,z}] max 2
+let ruler3dLine = null;
+let ruler3dLabel = null;
+let raycaster3d = new THREE.Raycaster();
+let mouse3dVec = new THREE.Vector2();
+
+function onCanvas3dClick(e){
+  if(tool !== 'measure' || !is3D || !camera3d) return;
+  const rect = document.getElementById('c3d').getBoundingClientRect();
+  mouse3dVec.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse3dVec.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster3d.setFromCamera(mouse3dVec, camera3d);
+  // Get all wall meshes (filter by userData or just all meshes except floor)
+  const meshes = [];
+  scene3d.traverse(obj => {
+    if(obj.isMesh && obj.geometry && obj.geometry.type === 'BoxGeometry') meshes.push(obj);
+  });
+  const hits = raycaster3d.intersectObjects(meshes);
+  if(hits.length === 0) return;
+  const pt = hits[0].point.clone();
+  // Snap to wall surface
+  ruler3dPoints.push(pt);
+  // Add visual marker
+  const markerGeo = new THREE.SphereGeometry(0.05, 16, 16);
+  const markerMat = new THREE.MeshBasicMaterial({color: 0x5b8def});
+  const marker = new THREE.Mesh(markerGeo, markerMat);
+  marker.position.copy(pt);
+  marker.userData.isRuler = true;
+  scene3d.add(marker);
+
+  if(ruler3dPoints.length === 2){
+    // Draw line between points
+    const lineMat = new THREE.LineBasicMaterial({color: 0x5b8def, linewidth: 2});
+    const lineGeo = new THREE.BufferGeometry().setFromPoints(ruler3dPoints);
+    ruler3dLine = new THREE.Line(lineGeo, lineMat);
+    ruler3dLine.userData.isRuler = true;
+    scene3d.add(ruler3dLine);
+    // Calculate distance in mm
+    const dx = (ruler3dPoints[1].x - ruler3dPoints[0].x) * 1000;
+    const dy = (ruler3dPoints[1].y - ruler3dPoints[0].y) * 1000;
+    const dz = (ruler3dPoints[1].z - ruler3dPoints[0].z) * 1000;
+    const distMm = Math.round(Math.sqrt(dx*dx + dy*dy + dz*dz));
+    const distText = distMm >= 1000 ? (distMm/1000).toFixed(2)+' м' : distMm+' мм';
+    // Show label as CSS overlay
+    showRuler3dLabel(ruler3dPoints[0], ruler3dPoints[1], distText);
+  }
+  if(ruler3dPoints.length > 2){
+    clearRuler3d();
+  }
+}
+
+function showRuler3dLabel(p1, p2, text){
+  removeRuler3dLabel();
+  const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+  ruler3dLabel = document.createElement('div');
+  ruler3dLabel.className = 'ruler3d-label';
+  ruler3dLabel.textContent = text;
+  document.getElementById('main').appendChild(ruler3dLabel);
+  // Update position in animate loop
+  ruler3dLabel._worldPos = mid;
+}
+
+function updateRuler3dLabel(){
+  if(!ruler3dLabel || !ruler3dLabel._worldPos || !camera3d) return;
+  const pos = ruler3dLabel._worldPos.clone().project(camera3d);
+  const rect = document.getElementById('c3d').getBoundingClientRect();
+  const x = (pos.x * 0.5 + 0.5) * rect.width;
+  const y = (-pos.y * 0.5 + 0.5) * rect.height;
+  ruler3dLabel.style.left = x + 'px';
+  ruler3dLabel.style.top = (y - 30) + 'px';
+}
+
+function removeRuler3dLabel(){
+  if(ruler3dLabel && ruler3dLabel.parentNode) ruler3dLabel.parentNode.removeChild(ruler3dLabel);
+  ruler3dLabel = null;
+}
+
+function clearRuler3d(){
+  ruler3dPoints = [];
+  if(scene3d){
+    const toRemove = [];
+    scene3d.traverse(obj => { if(obj.userData && obj.userData.isRuler) toRemove.push(obj); });
+    toRemove.forEach(obj => scene3d.remove(obj));
+  }
+  ruler3dLine = null;
+  removeRuler3dLabel();
+}
+
 function animate3d(){
   if(!is3D)return;
   requestAnimationFrame(animate3d);
+  updateRuler3dLabel();
   renderer3d.render(scene3d, camera3d);
 }
 
@@ -1138,6 +1234,146 @@ function getApartmentFloorShape(s){
   });
   unique.sort((a,b)=>Math.atan2(a.y-cy,a.x-cx)-Math.atan2(b.y-cy,b.x-cx));
   return unique;
+}
+
+// ========== PDF EXPORT ==========
+function exportPDF(){
+  // Render plan to offscreen canvas at high res
+  const pad = 200; // mm padding
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  walls.forEach(w=>{
+    minX=Math.min(minX,w.x1,w.x2); minY=Math.min(minY,w.y1,w.y2);
+    maxX=Math.max(maxX,w.x1,w.x2); maxY=Math.max(maxY,w.y1,w.y2);
+  });
+  minX-=pad; minY-=pad; maxX+=pad; maxY+=pad;
+  const planW=maxX-minX, planH=maxY-minY;
+
+  // A4 landscape: 297x210mm → scale plan to fit
+  const pdfW=297, pdfH=210;
+  const scaleX=(pdfW-20)/planW*1000, scaleY=(pdfH-20)/planH*1000;
+  const pdfScale=Math.min(scaleX,scaleY);
+
+  // Create offscreen canvas
+  const offW=Math.ceil(planW*pdfScale/1000);
+  const offH=Math.ceil(planH*pdfScale/1000);
+  const off=document.createElement('canvas');
+  off.width=offW*2; off.height=offH*2; // 2x for sharpness
+  const oc=off.getContext('2d');
+  oc.scale(2,2);
+  oc.fillStyle='#ffffff';
+  oc.fillRect(0,0,offW,offH);
+
+  // Transform: plan mm → canvas px
+  function tx(x){return (x-minX)*pdfScale/1000}
+  function ty(y){return (y-minY)*pdfScale/1000}
+
+  // Draw walls
+  walls.forEach(w=>{
+    oc.strokeStyle=w.type==='ext'?'#222':'#666';
+    oc.lineWidth=Math.max(w.thickness*pdfScale/1000, 1.5);
+    // Draw with openings
+    const wdx=w.x2-w.x1, wdy=w.y2-w.y1, wlen=Math.sqrt(wdx*wdx+wdy*wdy);
+    if(wlen===0)return;
+    const openings=[];
+    doors.filter(d=>d.wallId===w.id).forEach(d=>{
+      openings.push({start:d.pos-d.width/2/wlen, end:d.pos+d.width/2/wlen});
+    });
+    windows.filter(wi=>wi.wallId===w.id).forEach(wi=>{
+      openings.push({start:wi.pos-wi.width/2/wlen, end:wi.pos+wi.width/2/wlen});
+    });
+    openings.sort((a,b)=>a.start-b.start);
+    let t=0;
+    oc.beginPath();
+    for(const op of openings){
+      if(op.start>t){
+        const a=[tx(w.x1+wdx*t),ty(w.y1+wdy*t)];
+        const b=[tx(w.x1+wdx*op.start),ty(w.y1+wdy*op.start)];
+        oc.moveTo(a[0],a[1]);oc.lineTo(b[0],b[1]);
+      }
+      t=op.end;
+    }
+    if(t<1){
+      const a=[tx(w.x1+wdx*t),ty(w.y1+wdy*t)];
+      oc.moveTo(a[0],a[1]);oc.lineTo(tx(w.x2),ty(w.y2));
+    }
+    oc.stroke();
+  });
+
+  // Draw doors
+  doors.forEach(d=>{
+    const wall=walls.find(w=>w.id===d.wallId);
+    if(!wall)return;
+    const wdx=wall.x2-wall.x1,wdy=wall.y2-wall.y1,wlen=Math.sqrt(wdx*wdx+wdy*wdy);
+    if(wlen===0)return;
+    const p1x=wall.x1+wdx*(d.pos-d.width/2/wlen), p1y=wall.y1+wdy*(d.pos-d.width/2/wlen);
+    const p2x=wall.x1+wdx*(d.pos+d.width/2/wlen), p2y=wall.y1+wdy*(d.pos+d.width/2/wlen);
+    oc.strokeStyle='#e67e22';oc.lineWidth=1.5;
+    oc.beginPath();oc.moveTo(tx(p1x),ty(p1y));oc.lineTo(tx(p2x),ty(p2y));oc.stroke();
+  });
+
+  // Draw windows
+  windows.forEach(w=>{
+    const wall=walls.find(wl=>wl.id===w.wallId);
+    if(!wall)return;
+    const wdx=wall.x2-wall.x1,wdy=wall.y2-wall.y1,wlen=Math.sqrt(wdx*wdx+wdy*wdy);
+    if(wlen===0)return;
+    const p1x=wall.x1+wdx*(w.pos-w.width/2/wlen), p1y=wall.y1+wdy*(w.pos-w.width/2/wlen);
+    const p2x=wall.x1+wdx*(w.pos+w.width/2/wlen), p2y=wall.y1+wdy*(w.pos+w.width/2/wlen);
+    const nx=-(wdy/wlen)*3, ny=(wdx/wlen)*3;
+    oc.strokeStyle='#3498db';oc.lineWidth=1.5;
+    oc.beginPath();oc.moveTo(tx(p1x)+nx,ty(p1y)+ny);oc.lineTo(tx(p2x)+nx,ty(p2y)+ny);oc.stroke();
+    oc.beginPath();oc.moveTo(tx(p1x)-nx,ty(p1y)-ny);oc.lineTo(tx(p2x)-nx,ty(p2y)-ny);oc.stroke();
+  });
+
+  // Draw dimensions
+  oc.fillStyle='#555';oc.font='9px sans-serif';oc.textAlign='center';oc.textBaseline='middle';
+  walls.forEach(w=>{
+    const dx=w.x2-w.x1,dy=w.y2-w.y1,len=Math.round(Math.sqrt(dx*dx+dy*dy));
+    if(len<200)return;
+    const mx=tx((w.x1+w.x2)/2), my=ty((w.y1+w.y2)/2);
+    const angle=Math.atan2(dy,dx);
+    const nx=-Math.sin(angle)*12, ny=Math.cos(angle)*12;
+    oc.save();oc.translate(mx+nx,my+ny);
+    let ta=angle;if(ta>Math.PI/2)ta-=Math.PI;if(ta<-Math.PI/2)ta+=Math.PI;
+    oc.rotate(ta);
+    oc.fillText(len+'', 0, 0);
+    oc.restore();
+  });
+
+  // Draw room names
+  oc.fillStyle='#333';oc.font='bold 12px sans-serif';oc.textAlign='center';
+  const rooms=[
+    {name:'Спальня',x:1400,y:2200},{name:'Вітальня + Кухня',x:4350,y:3700},
+    {name:'Коридор',x:580,y:6100},{name:'Ванна',x:2100,y:6700},{name:'Балкон',x:6040,y:2570}
+  ];
+  rooms.forEach(r=>oc.fillText(r.name, tx(r.x), ty(r.y)));
+
+  // Draw measurements
+  oc.strokeStyle='#5b8def';oc.lineWidth=1;oc.setLineDash([4,3]);
+  measurements.forEach(m=>{
+    oc.beginPath();oc.moveTo(tx(m.x1),ty(m.y1));oc.lineTo(tx(m.x2),ty(m.y2));oc.stroke();
+    const dx=m.x2-m.x1,dy=m.y2-m.y1,len=Math.round(Math.sqrt(dx*dx+dy*dy));
+    const mx=tx((m.x1+m.x2)/2), my=ty((m.y1+m.y2)/2);
+    oc.fillStyle='#5b8def';oc.font='bold 9px sans-serif';
+    oc.fillText(len>=1000?(len/1000).toFixed(2)+'м':len+'мм', mx, my-8);
+  });
+  oc.setLineDash([]);
+
+  // Generate PDF
+  const {jsPDF} = window.jspdf;
+  const pdf = new jsPDF({orientation:'landscape', unit:'mm', format:'a4'});
+  // Title
+  pdf.setFontSize(14);
+  pdf.text('ProfiBud — План квартири', 10, 10);
+  pdf.setFontSize(8);
+  pdf.text(new Date().toLocaleDateString('uk-UA'), 260, 10);
+  // Add canvas as image
+  const imgData = off.toDataURL('image/png');
+  const imgW = pdfW-20, imgH = offH/offW*(pdfW-20);
+  const finalH = Math.min(imgH, pdfH-20);
+  const finalW = finalH/imgH*imgW;
+  pdf.addImage(imgData, 'PNG', 10, 15, finalW, finalH);
+  pdf.save('plan.pdf');
 }
 
 // ========== AUTO-SAVE / LOAD ==========
