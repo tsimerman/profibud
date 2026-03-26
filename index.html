@@ -724,6 +724,79 @@ document.addEventListener('keydown', e=>{
   if(e.ctrlKey&&e.key==='y'){e.preventDefault();redo()}
 });
 
+// ========== TOUCH SUPPORT ==========
+let touchState = {lastDist:0, lastMid:null, panning:false};
+
+c2d.addEventListener('touchstart', e=>{
+  e.preventDefault();
+  const touches = e.touches;
+  if(touches.length === 2){
+    // Pinch zoom start
+    const dx=touches[1].clientX-touches[0].clientX, dy=touches[1].clientY-touches[0].clientY;
+    touchState.lastDist = Math.sqrt(dx*dx+dy*dy);
+    touchState.lastMid = [(touches[0].clientX+touches[1].clientX)/2, (touches[0].clientY+touches[1].clientY)/2];
+    touchState.panning = true;
+    panCamStart = [camX, camY];
+  } else if(touches.length === 1){
+    // Single finger = pan
+    touchState.panning = true;
+    touchState.lastMid = [touches[0].clientX, touches[0].clientY];
+    panCamStart = [camX, camY];
+  }
+}, {passive:false});
+
+c2d.addEventListener('touchmove', e=>{
+  e.preventDefault();
+  const touches = e.touches;
+  if(touches.length === 2){
+    // Pinch zoom
+    const dx=touches[1].clientX-touches[0].clientX, dy=touches[1].clientY-touches[0].clientY;
+    const newDist = Math.sqrt(dx*dx+dy*dy);
+    const mid = [(touches[0].clientX+touches[1].clientX)/2, (touches[0].clientY+touches[1].clientY)/2];
+    if(touchState.lastDist > 0){
+      const factor = newDist / touchState.lastDist;
+      const rect = c2d.getBoundingClientRect();
+      const [mx,my] = toWorld(mid[0]-rect.left, mid[1]-rect.top);
+      zoom *= factor;
+      zoom = Math.max(0.01, Math.min(0.5, zoom));
+      camX = mx - (mid[0]-rect.left - vw/2)/zoom;
+      camY = my - (mid[1]-rect.top - vh/2)/zoom;
+    }
+    // Pan with two fingers
+    if(touchState.lastMid){
+      const pdx = (mid[0]-touchState.lastMid[0])/zoom;
+      const pdy = (mid[1]-touchState.lastMid[1])/zoom;
+      camX -= pdx; camY -= pdy;
+    }
+    touchState.lastDist = newDist;
+    touchState.lastMid = mid;
+    draw();
+  } else if(touches.length === 1 && touchState.panning){
+    // Single finger pan
+    const cx=touches[0].clientX, cy=touches[0].clientY;
+    if(touchState.lastMid){
+      const pdx = (cx-touchState.lastMid[0])/zoom;
+      const pdy = (cy-touchState.lastMid[1])/zoom;
+      camX -= pdx; camY -= pdy;
+    }
+    touchState.lastMid = [cx, cy];
+    draw();
+  }
+}, {passive:false});
+
+c2d.addEventListener('touchend', e=>{
+  e.preventDefault();
+  if(e.touches.length === 0){
+    touchState.panning = false;
+    touchState.lastDist = 0;
+    touchState.lastMid = null;
+    autoSave();
+  } else if(e.touches.length === 1){
+    touchState.lastDist = 0;
+    touchState.lastMid = [e.touches[0].clientX, e.touches[0].clientY];
+  }
+}, {passive:false});
+
 // ========== HIT TESTING ==========
 function hitTest(wx,wy){
   const threshold = 15/zoom;
