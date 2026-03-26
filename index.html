@@ -1187,6 +1187,59 @@ function init3D(){
   c3.addEventListener('contextmenu', e=>e.preventDefault());
   c3.addEventListener('click', onCanvas3dClick);
 
+  // Touch controls for 3D
+  let touch3d = {lastDist:0, lastX:0, lastY:0, fingers:0};
+  c3.addEventListener('touchstart', e=>{
+    e.preventDefault();
+    const t=e.touches;
+    touch3d.fingers=t.length;
+    if(t.length===1){
+      touch3d.lastX=t[0].clientX; touch3d.lastY=t[0].clientY;
+    } else if(t.length===2){
+      const dx=t[1].clientX-t[0].clientX, dy=t[1].clientY-t[0].clientY;
+      touch3d.lastDist=Math.sqrt(dx*dx+dy*dy);
+      touch3d.lastX=(t[0].clientX+t[1].clientX)/2;
+      touch3d.lastY=(t[0].clientY+t[1].clientY)/2;
+    }
+  },{passive:false});
+  c3.addEventListener('touchmove', e=>{
+    e.preventDefault();
+    const t=e.touches;
+    if(t.length===1){
+      const dx=t[0].clientX-touch3d.lastX, dy=t[0].clientY-touch3d.lastY;
+      touch3d.lastX=t[0].clientX; touch3d.lastY=t[0].clientY;
+      // 1 finger = orbit (rotate + tilt)
+      orbitAngle -= dx*0.01;
+      orbitY = Math.max(1,Math.min(20,orbitY+dy*0.05));
+      updateCamera3d();
+    } else if(t.length===2){
+      const dx=t[1].clientX-t[0].clientX, dy=t[1].clientY-t[0].clientY;
+      const newDist=Math.sqrt(dx*dx+dy*dy);
+      const mx=(t[0].clientX+t[1].clientX)/2, my=(t[0].clientY+t[1].clientY)/2;
+      // Pinch = zoom
+      if(touch3d.lastDist>0){
+        const factor=touch3d.lastDist/newDist;
+        orbitRadius=Math.max(3,Math.min(30,orbitRadius*factor));
+      }
+      // 2 finger pan
+      const pdx=mx-touch3d.lastX, pdy=my-touch3d.lastY;
+      orbitTarget.x -= pdx*0.005;
+      orbitTarget.z -= pdy*0.005;
+      touch3d.lastDist=newDist;
+      touch3d.lastX=mx; touch3d.lastY=my;
+      updateCamera3d();
+    }
+  },{passive:false});
+  c3.addEventListener('touchend', e=>{
+    e.preventDefault();
+    touch3d.fingers=e.touches.length;
+    if(e.touches.length===1){
+      touch3d.lastX=e.touches[0].clientX;
+      touch3d.lastY=e.touches[0].clientY;
+      touch3d.lastDist=0;
+    }
+  },{passive:false});
+
   clearRuler3d();
   animate3d();
 }
