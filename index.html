@@ -44,6 +44,15 @@ canvas{display:block;cursor:crosshair}
 .props .row{display:flex;gap:6px}.props .row>*{flex:1}
 .room-label{position:absolute;pointer-events:none;z-index:2}
 .ruler3d-label{position:absolute;background:var(--ac);color:#fff;padding:4px 10px;border-radius:6px;font-size:13px;font-weight:700;pointer-events:none;z-index:10;transform:translateX(-50%);white-space:nowrap}
+.furn-panel{position:absolute;top:0;left:0;bottom:0;width:200px;background:var(--sf);border-right:1px solid var(--bd);z-index:8;overflow-y:auto;display:none;padding:8px}
+.furn-panel.open{display:block}
+.furn-panel h4{font-size:11px;color:var(--tx2);text-transform:uppercase;letter-spacing:.5px;margin:10px 0 6px;padding:0 4px}
+.furn-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:grab;font-size:11px;color:var(--tx);transition:background .1s;user-select:none}
+.furn-item:hover{background:var(--sf2)}
+.furn-item:active{cursor:grabbing}
+.furn-icon{width:32px;height:32px;background:var(--sf2);border:1px solid var(--bd);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.furn-info{line-height:1.3}.furn-info small{color:var(--tx2);font-size:9px}
+@media(max-width:767px){.furn-panel{width:160px;font-size:10px}.furn-item{padding:4px 6px;gap:6px}.furn-icon{width:26px;height:26px;font-size:13px}}
 </style>
 </head>
 <body>
@@ -56,6 +65,7 @@ canvas{display:block;cursor:crosshair}
     <button class="tb" id="tb-door" onclick="setTool('door')">+ Двері</button>
     <button class="tb" id="tb-window" onclick="setTool('window')">+ Вікно</button>
     <button class="tb" onclick="duplicateWall()">∥ Паралельна</button>
+    <button class="tb" id="tb-furn" onclick="toggleFurnPanel()">🪑 Меблі</button>
     <button class="tb" id="tb-measure" onclick="setTool('measure')">📏 Лінійка</button>
     <button class="tb" id="tb-dims" onclick="cycleDims()">Розміри: вибране</button>
     <div class="sep"></div>
@@ -76,6 +86,7 @@ canvas{display:block;cursor:crosshair}
   <canvas id="c3d"></canvas>
   <div class="info" id="info">Scroll: масштаб · Alt+клік: рухати план · Клік: вибрати · Delete: видалити · Лінійка: вільне вимірювання, Shift = магніт до стін</div>
   <div class="props" id="props"></div>
+  <div class="furn-panel" id="furn-panel"></div>
 </div>
 
 <script>
@@ -169,7 +180,7 @@ function addWindow(wall,pos,width){
 let history = [], historyIdx = -1;
 function saveHistory(){
   history = history.slice(0,historyIdx+1);
-  history.push(JSON.stringify({walls,doors,windows,nextId}));
+  history.push(JSON.stringify({walls,doors,windows,furniture,nextId}));
   historyIdx = history.length-1;
   if(history.length > 50) { history.shift(); historyIdx--; }
 }
@@ -185,7 +196,7 @@ function redo(){
 }
 function restoreState(json){
   const s=JSON.parse(json);
-  walls=s.walls;doors=s.doors;windows=s.windows;nextId=s.nextId;
+  walls=s.walls;doors=s.doors;windows=s.windows;furniture=s.furniture||[];nextId=s.nextId;
   selected=null;draw();
 }
 
@@ -286,6 +297,7 @@ function draw(){
   drawDimensions();
   // Draw room names
   drawRoomNames();
+  drawFurniture();
   // Wall being drawn
   if(wallDraw){
     const [sx1,sy1]=toScreen(wallDraw.x1,wallDraw.y1);
@@ -578,6 +590,14 @@ c2d.addEventListener('mousedown', e=>{
           dragOrig = {x1:w.x1,y1:w.y1,x2:w.x2,y2:w.y2};
         }
       }
+      if(hit.type==='furniture'){
+        const f = furniture.find(x=>x.id===hit.id);
+        if(f){
+          dragging = true; dragMode='furn';
+          dragStart = [wx,wy];
+          dragOrig = {x:f.x, y:f.y};
+        }
+      }
     } else {
       selected = null;
     }
@@ -720,6 +740,17 @@ c2d.addEventListener('mousemove', e=>{
     }
     return;
   }
+  if(dragging && selected && selected.type==='furniture' && dragMode==='furn'){
+    const f = furniture.find(x=>x.id===selected.id);
+    if(f){
+      const dx = snapV(wx - dragStart[0]);
+      const dy = snapV(wy - dragStart[1]);
+      f.x = dragOrig.x + dx;
+      f.y = dragOrig.y + dy;
+      draw();
+    }
+    return;
+  }
   if(wallDraw) draw();
 });
 
@@ -811,7 +842,10 @@ c2d.addEventListener('touchend', e=>{
 // ========== HIT TESTING ==========
 function hitTest(wx,wy){
   const threshold = 15/zoom;
-  // Check doors first (smaller targets)
+  // Check furniture first (on top)
+  const fHit = hitTestFurniture(wx,wy);
+  if(fHit) return fHit;
+  // Check doors (smaller targets)
   for(const d of doors){
     const wall = walls.find(w=>w.id===d.wallId);
     if(!wall)continue;
@@ -912,6 +946,8 @@ function deleteSelected(){
     doors = doors.filter(d=>d.id!==selected.id);
   } else if(selected.type==='window'){
     windows = windows.filter(w=>w.id!==selected.id);
+  } else if(selected.type==='furniture'){
+    furniture = furniture.filter(f=>f.id!==selected.id);
   }
   selected=null;
   saveHistory();updateProps();draw();
@@ -994,6 +1030,19 @@ function updateProps(){
     html=`<h3>Вікно</h3>
       <label>Ширина (мм)</label><input type="number" value="${w.width}" onchange="editWindow(${w.id},'width',+this.value)">
       <label>Позиція (0-1)</label><input type="number" step="0.01" min="0.05" max="0.95" value="${w.pos.toFixed(2)}" onchange="editWindow(${w.id},'pos',+this.value)">`;
+  } else if(selected.type==='furniture'){
+    const f=furniture.find(x=>x.id===selected.id);
+    if(!f){panel.classList.remove('open');return}
+    html=`<h3>${f.icon} ${f.type}</h3>
+      <label>Поворот (°)</label><input type="number" step="15" value="${f.rotation||0}" onchange="editFurn(${f.id},'rotation',+this.value)">
+      <div class="row" style="margin-top:6px">
+        <div><label>Ширина</label><input type="number" value="${f.w}" onchange="editFurn(${f.id},'w',+this.value)"></div>
+        <div><label>Глибина</label><input type="number" value="${f.h}" onchange="editFurn(${f.id},'h',+this.value)"></div>
+      </div>
+      <div class="row" style="margin-top:8px;gap:4px">
+        <button class="tb" onclick="editFurn(${f.id},'rotation',(${f.rotation||0}+90)%360)" style="flex:1">↻ 90°</button>
+        <button class="tb" onclick="editFurn(${f.id},'rotation',(${f.rotation||0}+180)%360)" style="flex:1">↻ 180°</button>
+      </div>`;
   }
   panel.innerHTML=html;
 }
@@ -1001,6 +1050,7 @@ function updateProps(){
 function editWall(id,key,val){const w=walls.find(x=>x.id===id);if(w){w[key]=val;saveHistory();draw()}}
 function editDoor(id,key,val){const d=doors.find(x=>x.id===id);if(d){d[key]=val;saveHistory();draw()}}
 function editWindow(id,key,val){const w=windows.find(x=>x.id===id);if(w){w[key]=val;saveHistory();draw()}}
+function editFurn(id,key,val){const f=furniture.find(x=>x.id===id);if(f){f[key]=val;saveHistory();updateProps();draw()}}
 
 // ========== 3D VIEW ==========
 let scene3d, camera3d, renderer3d, controls3d, is3D=false;
@@ -1513,12 +1563,184 @@ function exportPDF(){
   pdf.save('plan.pdf');
 }
 
+// ========== FURNITURE ==========
+let furniture = [];
+const FURN_CATALOG = [
+  // Спальня
+  {cat:'Спальня', name:'Ліжко 2-сп', icon:'🛏️', w:1800, h:2100, h3d:500, color:'#8B6F47'},
+  {cat:'Спальня', name:'Ліжко 1-сп', icon:'🛏️', w:900, h:2100, h3d:500, color:'#8B6F47'},
+  {cat:'Спальня', name:'Тумбочка', icon:'🗄️', w:450, h:400, h3d:550, color:'#A0845C'},
+  {cat:'Спальня', name:'Шафа', icon:'🚪', w:1200, h:600, h3d:2200, color:'#7A6040'},
+  {cat:'Спальня', name:'Комод', icon:'🗄️', w:1000, h:450, h3d:800, color:'#9B7B4F'},
+  // Вітальня
+  {cat:'Вітальня', name:'Диван', icon:'🛋️', w:2200, h:900, h3d:800, color:'#5D7A99'},
+  {cat:'Вітальня', name:'Крісло', icon:'💺', w:800, h:800, h3d:800, color:'#5D7A99'},
+  {cat:'Вітальня', name:'Журн. столик', icon:'☕', w:900, h:500, h3d:400, color:'#A0845C'},
+  {cat:'Вітальня', name:'ТВ тумба', icon:'📺', w:1600, h:400, h3d:500, color:'#555'},
+  // Кухня
+  {cat:'Кухня', name:'Стіл обідній', icon:'🍽️', w:1200, h:800, h3d:750, color:'#A0845C'},
+  {cat:'Кухня', name:'Стілець', icon:'🪑', w:450, h:450, h3d:900, color:'#8B6F47'},
+  {cat:'Кухня', name:'Холодильник', icon:'🧊', w:600, h:650, h3d:1800, color:'#C0C0C0'},
+  {cat:'Кухня', name:'Плита', icon:'🔥', w:600, h:600, h3d:850, color:'#888'},
+  {cat:'Кухня', name:'Мийка', icon:'🚰', w:600, h:500, h3d:850, color:'#AAA'},
+  // Ванна
+  {cat:'Ванна', name:'Ванна', icon:'🛁', w:1700, h:700, h3d:600, color:'#D8E8F0'},
+  {cat:'Ванна', name:'Душ кабіна', icon:'🚿', w:900, h:900, h3d:2100, color:'#C8D8E0'},
+  {cat:'Ванна', name:'Унітаз', icon:'🚽', w:400, h:650, h3d:400, color:'#E8E8E8'},
+  {cat:'Ванна', name:'Раковина', icon:'🪥', w:550, h:450, h3d:850, color:'#E0E0E0'},
+  {cat:'Ванна', name:'Пральна маш.', icon:'👕', w:600, h:600, h3d:850, color:'#CCC'},
+  // Офіс
+  {cat:'Офіс', name:'Письм. стіл', icon:'💻', w:1200, h:600, h3d:750, color:'#9B7B4F'},
+  {cat:'Офіс', name:'Офіс крісло', icon:'🪑', w:550, h:550, h3d:1100, color:'#444'},
+  {cat:'Офіс', name:'Книжк. шафа', icon:'📚', w:800, h:350, h3d:1800, color:'#7A6040'},
+];
+
+function buildFurnPanel(){
+  const panel = document.getElementById('furn-panel');
+  let html = '';
+  let lastCat = '';
+  FURN_CATALOG.forEach((item, i) => {
+    if(item.cat !== lastCat){
+      html += `<h4>${item.cat}</h4>`;
+      lastCat = item.cat;
+    }
+    html += `<div class="furn-item" draggable="false" onmousedown="startFurnDrag(event,${i})" ontouchstart="startFurnDrag(event,${i})">
+      <div class="furn-icon">${item.icon}</div>
+      <div class="furn-info">${item.name}<br><small>${item.w}×${item.h} мм</small></div>
+    </div>`;
+  });
+  panel.innerHTML = html;
+}
+
+function toggleFurnPanel(){
+  const panel = document.getElementById('furn-panel');
+  panel.classList.toggle('open');
+  document.getElementById('tb-furn').classList.toggle('on', panel.classList.contains('open'));
+}
+
+let furnDrag = null; // {catIdx, x, y, placed:false}
+
+function startFurnDrag(e, catIdx){
+  e.preventDefault();
+  const item = FURN_CATALOG[catIdx];
+  // Place at center of viewport
+  const [cx, cy] = toWorld(vw/2, vh/2);
+  const f = {
+    id: uid(), type: item.name, catIdx,
+    x: snapV(cx - item.w/2), y: snapV(cy - item.h/2),
+    w: item.w, h: item.h, h3d: item.h3d,
+    rotation: 0, color: item.color, icon: item.icon
+  };
+  furniture.push(f);
+  selected = {type:'furniture', id:f.id};
+  furnDrag = {id:f.id, offsetX:0, offsetY:0};
+  // Start dragging immediately
+  const getXY = (ev) => {
+    const touch = ev.touches ? ev.touches[0] : ev;
+    return [touch.clientX, touch.clientY];
+  };
+  const [startX, startY] = getXY(e);
+  const startWorld = toWorld(startX - c2d.getBoundingClientRect().left, startY - c2d.getBoundingClientRect().top);
+
+  const onMove = (ev) => {
+    ev.preventDefault();
+    const [mx, my] = getXY(ev);
+    const rect = c2d.getBoundingClientRect();
+    const [wx, wy] = toWorld(mx - rect.left, my - rect.top);
+    f.x = snapV(wx - item.w/2);
+    f.y = snapV(wy - item.h/2);
+    draw();
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('touchend', onUp);
+    furnDrag = null;
+    saveHistory(); updateProps(); draw();
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+  document.addEventListener('touchmove', onMove, {passive:false});
+  document.addEventListener('touchend', onUp);
+  draw();
+}
+
+function drawFurniture(){
+  furniture.forEach(f => {
+    const [sx, sy] = toScreen(f.x, f.y);
+    const sw = f.w * zoom, sh = f.h * zoom;
+    const isSel = selected && selected.type==='furniture' && selected.id===f.id;
+
+    ctx.save();
+    // Rotation around center
+    const cx = sx + sw/2, cy = sy + sh/2;
+    ctx.translate(cx, cy);
+    ctx.rotate((f.rotation||0) * Math.PI/180);
+    ctx.translate(-sw/2, -sh/2);
+
+    // Fill
+    ctx.fillStyle = f.color || '#8B6F47';
+    ctx.globalAlpha = 0.6;
+    ctx.fillRect(0, 0, sw, sh);
+    ctx.globalAlpha = 1;
+
+    // Border
+    ctx.strokeStyle = isSel ? '#5b8def' : 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = isSel ? 2 : 1;
+    ctx.strokeRect(0, 0, sw, sh);
+
+    // Icon + name
+    const fontSize = Math.max(8, Math.min(14, sw/4));
+    ctx.fillStyle = '#fff';
+    ctx.font = fontSize + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if(sw > 30 && sh > 20){
+      ctx.fillText(f.icon || '', sw/2, sh/2 - fontSize*0.6);
+      ctx.font = Math.max(7, fontSize*0.7) + 'px sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.fillText(f.type || '', sw/2, sh/2 + fontSize*0.6);
+    }
+
+    ctx.restore();
+
+    // Selection handles
+    if(isSel){
+      // Rotate handle
+      const [rcx, rcy] = [cx, sy - 20];
+      ctx.beginPath(); ctx.arc(rcx, rcy, 6, 0, Math.PI*2);
+      ctx.fillStyle = '#3dd68c'; ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('↻', rcx, rcy);
+    }
+  });
+}
+
+// Furniture hit test
+function hitTestFurniture(wx, wy){
+  for(let i=furniture.length-1; i>=0; i--){
+    const f = furniture[i];
+    // Simple AABB (ignoring rotation for simplicity)
+    const rot = (f.rotation||0) * Math.PI/180;
+    const cx=f.x+f.w/2, cy=f.y+f.h/2;
+    // Transform point into furniture local space
+    const dx=wx-cx, dy=wy-cy;
+    const lx=dx*Math.cos(-rot)-dy*Math.sin(-rot);
+    const ly=dx*Math.sin(-rot)+dy*Math.cos(-rot);
+    if(Math.abs(lx)<=f.w/2 && Math.abs(ly)<=f.h/2){
+      return {type:'furniture', id:f.id};
+    }
+  }
+  return null;
+}
+
 // ========== AUTO-SAVE / LOAD ==========
 const SAVE_KEY = 'profibud_plan';
 function autoSave(){
   try{
     localStorage.setItem(SAVE_KEY, JSON.stringify({
-      walls, doors, windows, measurements, nextId,
+      walls, doors, windows, measurements, furniture, nextId,
       cam:{x:camX,y:camY,z:zoom}
     }));
   }catch(e){}
@@ -1529,7 +1751,7 @@ function autoLoad(){
     if(!raw) return false;
     const s = JSON.parse(raw);
     walls=s.walls||[]; doors=s.doors||[]; windows=s.windows||[];
-    measurements=s.measurements||[]; nextId=s.nextId||1;
+    measurements=s.measurements||[]; furniture=s.furniture||[]; nextId=s.nextId||1;
     if(s.cam){camX=s.cam.x; camY=s.cam.y; zoom=s.cam.z;}
     saveHistory();
     return true;
@@ -1540,7 +1762,7 @@ function resetToDefault(){
   localStorage.removeItem(SAVE_KEY);
   initApartment();
   camX=3300; camY=3700; zoom=0.12;
-  measurements=[];
+  measurements=[]; furniture=[];
   draw();
 }
 // Override saveHistory to also auto-save
@@ -1552,6 +1774,7 @@ if(!autoLoad()){
   initApartment();
   camX = 3300; camY = 3700;
 }
+buildFurnPanel();
 resize();
 setTimeout(draw, 100);
 </script>
