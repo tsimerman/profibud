@@ -780,10 +780,24 @@ c2d.addEventListener('touchstart', e=>{
     touchState.panning = true;
     panCamStart = [camX, camY];
   } else if(touches.length === 1){
-    // Single finger = pan
-    touchState.panning = true;
-    touchState.lastMid = [touches[0].clientX, touches[0].clientY];
-    panCamStart = [camX, camY];
+    const rect = c2d.getBoundingClientRect();
+    const tx = touches[0].clientX - rect.left, ty = touches[0].clientY - rect.top;
+    const [wx, wy] = toWorld(tx, ty);
+    // Check if touching furniture — drag it instead of panning
+    const fHit = hitTestFurniture(wx, wy);
+    if(fHit){
+      touchState.panning = false;
+      touchState.draggingFurn = fHit.id;
+      const f = furniture.find(x=>x.id===fHit.id);
+      touchState.furnOffset = [wx - f.x, wy - f.y];
+      selected = fHit;
+      updateProps(); draw();
+    } else {
+      touchState.draggingFurn = null;
+      touchState.panning = true;
+      touchState.lastMid = [touches[0].clientX, touches[0].clientY];
+      panCamStart = [camX, camY];
+    }
   }
 }, {passive:false});
 
@@ -813,6 +827,17 @@ c2d.addEventListener('touchmove', e=>{
     touchState.lastDist = newDist;
     touchState.lastMid = mid;
     draw();
+  } else if(touches.length === 1 && touchState.draggingFurn){
+    // Dragging furniture with finger
+    const rect = c2d.getBoundingClientRect();
+    const tx = touches[0].clientX - rect.left, ty = touches[0].clientY - rect.top;
+    const [wx, wy] = toWorld(tx, ty);
+    const f = furniture.find(x=>x.id===touchState.draggingFurn);
+    if(f){
+      f.x = snapV(wx - touchState.furnOffset[0]);
+      f.y = snapV(wy - touchState.furnOffset[1]);
+      draw();
+    }
   } else if(touches.length === 1 && touchState.panning){
     // Single finger pan
     const cx=touches[0].clientX, cy=touches[0].clientY;
@@ -829,6 +854,10 @@ c2d.addEventListener('touchmove', e=>{
 c2d.addEventListener('touchend', e=>{
   e.preventDefault();
   if(e.touches.length === 0){
+    if(touchState.draggingFurn){
+      touchState.draggingFurn = null;
+      saveHistory(); updateProps();
+    }
     touchState.panning = false;
     touchState.lastDist = 0;
     touchState.lastMid = null;
